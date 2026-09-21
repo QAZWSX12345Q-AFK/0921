@@ -51,60 +51,113 @@ def get_holdings():
 
 
 def get_bond_quotes():
+    """
+    获取银行间债券现券成交行情。
+
+    这个基金的主要持仓是银行间债券，不能使用 bond_zh_hs_spot()
+    （沪深债券实时行情）。这里改用中国外汇交易中心的
+    bond_spot_deal()，返回成交净价、最新收益率和涨跌(BP)。
+    """
     try:
-        df = ak.bond_zh_hs_spot()
+        df = ak.bond_spot_deal()
         if df is None or df.empty:
             return {}
 
         name_col = next(
-            (c for c in df.columns if str(c) in ("名称", "债券名称")),
+            (c for c in df.columns if "债券简称" in str(c)),
             None,
         )
-        pct_col = next((c for c in df.columns if "涨跌幅" in str(c)), None)
+        price_col = next(
+            (c for c in df.columns if "成交净价" in str(c)),
+            None,
+        )
+        yield_col = next(
+            (c for c in df.columns if "最新收益率" in str(c)),
+            None,
+        )
+        bp_col = next(
+            (c for c in df.columns if str(c).strip() == "涨跌"),
+            None,
+        )
 
-        if not name_col or not pct_col:
+        if not name_col:
             return {}
 
         quotes = {}
         for _, row in df.iterrows():
             try:
                 name = str(row[name_col]).strip()
-                pct = float(str(row[pct_col]).replace("%", "").strip())
-                quotes[name] = pct
+                if not name:
+                    continue
+
+                price = None
+                yld = None
+                bp = None
+
+                if price_col:
+                    price = float(row[price_col])
+                if yield_col:
+                    yld = float(row[yield_col])
+                if bp_col and pd.notna(row[bp_col]):
+                    bp = float(row[bp_col])
+
+                quotes[name] = {
+                    "price": price,
+                    "yield": yld,
+                    "bp": bp,
+                }
             except (TypeError, ValueError):
                 continue
 
         return quotes
     except Exception as exc:
-        print("债券行情查询失败:", repr(exc))
+        print("银行间债券行情查询失败:", repr(exc))
         return {}
-
 
 def build_report():
     holdings, holding_source = get_holdings()
     quotes = get_bond_quotes()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    estimated = 0.0
+    # 这里不把“涨跌(BP)”错误地当成“价格涨跌幅%”。
+    # 银行间现券接口给出的涨跌是收益率变动(BP)，不是价格百分比。
+    # 因此本版先准确展示银行间行情和按持仓权重计算的加权收益率变动。
+    weighted_bp = 0.0
+    matched_count = 0
     rows_html = []
 
     for name, weight in holdings:
-        pct = quotes.get(name)
+        quote = quotes.get(name)
 
-        if pct is None:
-            change_text = "暂无可靠行情"
+        if quote is None:
+            bp_text = "暂无行情"
+            yield_text = "—"
+            price_text = "—"
             contribution_text = "—"
         else:
-            contribution = (weight / 100.0) * pct
-            estimated += contribution
-            change_text = f"{pct:+.4f}%"
-            contribution_text = f"{contribution:+.4f}%"
+            bp = quote.get("bp")
+            yld = quote.get("yield")
+            price = quote.get("price")
+
+            bp_text = f"{bp:+.2f} BP" if bp is not None else "—"
+            yield_text = f"{yld:.4f}%" if yld is not None else "—"
+            price_text = f"{price:.4f}" if price is not None else "—"
+
+            if bp is not None:
+                contribution = (weight / 100.0) * bp
+                weighted_bp += contribution
+                matched_count += 1
+                contribution_text = f"{contribution:+.4f} BP"
+            else:
+                contribution_text = "—"
 
         rows_html.append(
             "<tr>"
             f"<td>{name}</td>"
             f"<td>{weight:.2f}%</td>"
-            f"<td>{change_text}</td>"
+            f"<td>{price_text}</td>"
+            f"<td>{yield_text}</td>"
+            f"<td>{bp_text}</td>"
             f"<td>{contribution_text}</td>"
             "</tr>"
         )
@@ -116,33 +169,38 @@ def build_report():
         <p>生成时间：{now}</p>
         <p>基金：{FUND_NAME}（004102）</p>
         <p>持仓来源：{holding_source}</p>
+        <p>银行间行情来源：AKShare bond_spot_deal（中国外汇交易中心/全国银行间同业拆借中心）</p>
 
         <table border="1" cellpadding="6" cellspacing="0">
           <tr>
             <th>主要持仓</th>
             <th>持仓权重</th>
-            <th>债券当日涨跌</th>
-            <th>估算贡献</th>
+            <th>成交净价</th>
+            <th>最新收益率</th>
+            <th>收益率涨跌</th>
+            <th>加权贡献</th>
           </tr>
           {''.join(rows_html)}
         </table>
 
-        <h3>主要持仓加权估算：{estimated:+.4f}%</h3>
+        <h3>主要持仓加权收益率变动：{weighted_bp:+.4f} BP</h3>
+        <p>已匹配行情：{matched_count}/{len(holdings)} 只债券</p>
 
         <p>
-          说明：这是根据已披露主要持仓及债券行情计算的方向性估算，
-          不是基金公司公布的当日净值收益率。基金实际收益还会受到
-          未列示资产、应计利息、现金、费用、申赎等因素影响。
+          说明：银行间债券行情接口的“涨跌”单位是 BP（基点），
+          表示收益率变动，并不是债券价格涨跌幅。因此本程序不会
+          把 BP 直接当成百分比计算基金收益，以免产生错误结果。
         </p>
         <p>
-          如果行情接口没有可靠价格，本程序不会用猜测数据补齐。
+          这版先确保持仓债券能够正确匹配到银行间实时成交行情。
+          基金实际当日净值收益率仍需考虑完整持仓、应计利息、现金、
+          费用以及申赎等因素。
         </p>
       </body>
     </html>
     """
 
-    return html, estimated
-
+    return html, weighted_bp
 
 def send_email(html, estimated):
     subject = (
