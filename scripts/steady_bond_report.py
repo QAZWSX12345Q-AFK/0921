@@ -155,9 +155,51 @@ def send_email(html, estimated):
     message["To"] = TO_EMAIL
     message["Subject"] = Header(subject, "utf-8")
 
-    with smtplib.SMTP_SSL("smtp.qq.com", 465, timeout=30) as server:
-        server.login(FROM_EMAIL, AUTH_CODE)
-        server.sendmail(FROM_EMAIL, [TO_EMAIL], message.as_string())
+    # QQ 邮箱支持 465 SSL 和 587 STARTTLS。
+    # GitHub Actions 云端环境下，如果某个端口被临时断开，自动尝试另一个。
+    if not FROM_EMAIL or not AUTH_CODE or not TO_EMAIL:
+        raise RuntimeError("QQ_EMAIL、QQ_AUTH_CODE、REPORT_TO 不能为空")
+
+    last_error = None
+
+    # 方案一：465 + SSL
+    try:
+        with smtplib.SMTP_SSL("smtp.qq.com", 465, timeout=30) as server:
+            server.ehlo()
+            server.login(FROM_EMAIL.strip(), AUTH_CODE.strip())
+            server.sendmail(
+                FROM_EMAIL.strip(),
+                [TO_EMAIL.strip()],
+                message.as_string(),
+            )
+            print("QQ SMTP 465 SSL 发送成功")
+            return
+    except Exception as exc:
+        last_error = exc
+        print("QQ SMTP 465 SSL 失败，准备尝试 587 STARTTLS:", repr(exc))
+
+    # 方案二：587 + STARTTLS
+    try:
+        with smtplib.SMTP("smtp.qq.com", 587, timeout=30) as server:
+            server.ehlo()
+            server.starttls()
+            server.ehlo()
+            server.login(FROM_EMAIL.strip(), AUTH_CODE.strip())
+            server.sendmail(
+                FROM_EMAIL.strip(),
+                [TO_EMAIL.strip()],
+                message.as_string(),
+            )
+            print("QQ SMTP 587 STARTTLS 发送成功")
+            return
+    except Exception as exc:
+        last_error = exc
+
+    raise RuntimeError(
+        "QQ SMTP 465 和 587 均发送失败。"
+        "请确认 QQ_EMAIL 与 QQ_AUTH_CODE 属于同一个 QQ 邮箱，"
+        "且 QQ_AUTH_CODE 是该邮箱新生成的 SMTP 授权码。"
+    ) from last_error
 
 
 if __name__ == "__main__":
