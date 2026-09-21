@@ -54,33 +54,30 @@ def get_bond_quotes():
     """
     获取银行间债券现券成交行情。
 
-    这个基金的主要持仓是银行间债券，不能使用 bond_zh_hs_spot()
-    （沪深债券实时行情）。这里改用中国外汇交易中心的
-    bond_spot_deal()，返回成交净价、最新收益率和涨跌(BP)。
+    GitHub Actions 与本地电脑的区别在于出口 IP 不同。
+    ChinaMoney 对部分访问会要求先完成访问初始化，因此先调用
+    bond_china_close_return_map()，再调用 bond_spot_deal()。
     """
     try:
+        # 先初始化中国外汇交易中心/ChinaMoney 的访问状态
+        try:
+            ak.bond_china_close_return_map()
+            print("ChinaMoney 访问初始化完成")
+        except Exception as exc:
+            print("ChinaMoney 访问初始化失败:", repr(exc))
+
         df = ak.bond_spot_deal()
         if df is None or df.empty:
+            print("bond_spot_deal 返回空数据")
             return {}
 
-        name_col = next(
-            (c for c in df.columns if "债券简称" in str(c)),
-            None,
-        )
-        price_col = next(
-            (c for c in df.columns if "成交净价" in str(c)),
-            None,
-        )
-        yield_col = next(
-            (c for c in df.columns if "最新收益率" in str(c)),
-            None,
-        )
-        bp_col = next(
-            (c for c in df.columns if str(c).strip() == "涨跌"),
-            None,
-        )
+        name_col = next((c for c in df.columns if "债券简称" in str(c)), None)
+        price_col = next((c for c in df.columns if "成交净价" in str(c)), None)
+        yield_col = next((c for c in df.columns if "最新收益率" in str(c)), None)
+        bp_col = next((c for c in df.columns if str(c).strip() == "涨跌"), None)
 
         if not name_col:
+            print("银行间行情缺少债券简称字段:", list(df.columns))
             return {}
 
         quotes = {}
@@ -90,25 +87,15 @@ def get_bond_quotes():
                 if not name:
                     continue
 
-                price = None
-                yld = None
-                bp = None
+                price = float(row[price_col]) if price_col and pd.notna(row[price_col]) else None
+                yld = float(row[yield_col]) if yield_col and pd.notna(row[yield_col]) else None
+                bp = float(row[bp_col]) if bp_col and pd.notna(row[bp_col]) else None
 
-                if price_col:
-                    price = float(row[price_col])
-                if yield_col:
-                    yld = float(row[yield_col])
-                if bp_col and pd.notna(row[bp_col]):
-                    bp = float(row[bp_col])
-
-                quotes[name] = {
-                    "price": price,
-                    "yield": yld,
-                    "bp": bp,
-                }
+                quotes[name] = {"price": price, "yield": yld, "bp": bp}
             except (TypeError, ValueError):
                 continue
 
+        print(f"银行间行情获取成功，共 {len(quotes)} 只债券")
         return quotes
     except Exception as exc:
         print("银行间债券行情查询失败:", repr(exc))
