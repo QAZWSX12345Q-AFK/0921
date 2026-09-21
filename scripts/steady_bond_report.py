@@ -3,12 +3,14 @@ import smtplib
 from datetime import datetime
 from email.header import Header
 from email.mime.text import MIMEText
+from zoneinfo import ZoneInfo
 
 import akshare as ak
 import pandas as pd
 
 FUND_CODE = "004102"
 FUND_NAME = "中信保诚稳悦债券A"
+REPORT_TZ = ZoneInfo("Asia/Shanghai")
 
 TO_EMAIL = os.environ["REPORT_TO"]
 FROM_EMAIL = os.environ["QQ_EMAIL"]
@@ -101,10 +103,14 @@ def get_bond_quotes():
         print("银行间债券行情查询失败:", repr(exc))
         return {}
 
+
 def build_report():
     holdings, holding_source = get_holdings()
     quotes = get_bond_quotes()
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # GitHub Actions 服务器默认使用 UTC。
+    # 报告统一按北京时间（Asia/Shanghai，UTC+8）显示。
+    now = datetime.now(REPORT_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
     # 这里不把“涨跌(BP)”错误地当成“价格涨跌幅%”。
     # 银行间现券接口给出的涨跌是收益率变动(BP)，不是价格百分比。
@@ -153,7 +159,7 @@ def build_report():
     <html>
       <body>
         <h2>中信保诚稳悦债券｜每日监控</h2>
-        <p>生成时间：{now}</p>
+        <p>生成时间：{now}（北京时间）</p>
         <p>基金：{FUND_NAME}（004102）</p>
         <p>持仓来源：{holding_source}</p>
         <p>银行间行情来源：AKShare bond_spot_deal（中国外汇交易中心/全国银行间同业拆借中心）</p>
@@ -189,9 +195,13 @@ def build_report():
 
     return html, weighted_bp
 
+
 def send_email(html, estimated):
+    # 邮件主题日期也统一使用北京时间。
+    report_time = datetime.now(REPORT_TZ)
+
     subject = (
-        f"【稳悦债券监控】{datetime.now():%m-%d} "
+        f"【稳悦债券监控】{report_time:%m-%d} "
         f"主要持仓估算 {estimated:+.2f}%"
     )
 
